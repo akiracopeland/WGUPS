@@ -22,8 +22,6 @@ This project implements the C950 WGUPS routing simulation with a custom **HashTa
 
 - `data/distances.csv` — the WGUPS table copied to CSV. Keep the first row and first column as location names; lower‑triangular distances are fine (the loader mirrors them). Ensure the **first name** is the **hub**.
 
-> In this notebook run, we attempted to convert the uploaded Excel files to CSV automatically so you can test immediately. For actual submission, include the CSVs.
-
 ## Run
 
 From the `wgups_project/` folder:
@@ -36,6 +34,7 @@ Then use the menu to:
 - Lookup any package by ID at a time.
 - Print status for **all** packages at a time (for screenshots at the requested windows).
 - Show first 10 buckets of the custom hash table (for your A/B screenshots).
+- Show the completion report with the total mileage for each truck.
 
 ## Notes
 
