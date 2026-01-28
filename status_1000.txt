@@ -1,0 +1,1 @@
+Status snapshot at 10:00\n\n ID  Address                                  Deadline City         Zip      Wt  Status     Delivered At\n----------------------------------------------------------------------------------------------------\n  0                                           EOD                         0.0  DELIVERED  08:00
