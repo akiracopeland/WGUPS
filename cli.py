@@ -118,12 +118,14 @@ def delayed_until_time(p: Package) -> datetime | None:
     """If a package note indicates a delay-until time (e.g., 9:05 AM), return that datetime.
 
     Returns None if the package is not delayed.
+
+    Note: We parse this only to decide whether the package is DELAYED at a given time.
+    We do NOT display the time in the CLI.
     """
     note = (p.note or "").lower()
     if "delayed" not in note:
         return None
 
-    # Common WGUPS note: "Delayed on flight---will not arrive to depot until 9:05 am"
     m = re.search(r'(\d{1,2}:\d{2})\s*(am|pm)?', note)
     if not m:
         # If note says delayed but time isn't parseable, use the dataset convention.
@@ -135,7 +137,6 @@ def delayed_until_time(p: Package) -> datetime | None:
     if ampm in {"AM", "PM"}:
         t = datetime.strptime(f"{hhmm} {ampm}", "%I:%M %p").time()
     else:
-        # If no AM/PM given, interpret as 24-hour. (WGUPS dataset uses AM for these delays.)
         t = datetime.strptime(hhmm, "%H:%M").time()
 
     return datetime.combine(START_TIME.date(), t)
@@ -144,10 +145,8 @@ def delayed_until_time(p: Package) -> datetime | None:
 def package_status_at(p: Package, at_time: datetime) -> tuple[str, str]:
     """Compute a package status snapshot at a specific time of day.
 
-    Returns (status, time_str):
-      - DELIVERED -> time_str is delivered time
-      - DELAYED   -> time_str is delay-until time (arrival at hub)
-      - EN_ROUTE/HUB -> time_str empty
+    Returns (status, delivered_time_str).
+    For DELAYED packages, delivered_time_str is blank (per your preference).
     """
     if p.delivered_at and p.delivered_at <= at_time:
         return 'DELIVERED', p.delivered_at.strftime('%H:%M')
@@ -155,7 +154,7 @@ def package_status_at(p: Package, at_time: datetime) -> tuple[str, str]:
     # If the package hasn't arrived at the hub yet, show DELAYED (not HUB).
     gate = delayed_until_time(p)
     if gate is not None and at_time < gate:
-        return 'DELAYED', gate.strftime('%H:%M')
+        return 'DELAYED', ''
 
     if p.depart_time and p.depart_time <= at_time:
         return 'EN_ROUTE', ''
@@ -170,11 +169,9 @@ def public_address_city_zip(store: HashTable, p: Package, at_time: datetime) -> 
       - Before 10:20, we must not display the corrected address.
     """
     if p.id == 9 and at_time < PKG9_CORRECTION_TIME:
-        # Show the original (wrong) address that was loaded from CSV into the hash table.
         rec = ht_lookup_package(store, 9)
         if rec is not None:
             return rec['address'], rec['city'], rec['zip']
-        # Fallback (should not happen): use whatever we have.
     return p.address, p.city, p.zip
 
 
@@ -182,8 +179,6 @@ def print_package_status(packages: Dict[int, Package], store: HashTable, at_time
     """Print a table of package statuses at a given time.
 
     Also respects the rubric rule about not revealing package #9’s corrected address before 10:20.
-
-    Note: For DELAYED packages, the "Delivered At" column shows the delay-until time.
     """
     print(f"\nPackage status at {at_time.strftime('%H:%M')}:\n")
     print(f"{'ID':>3}  {'Address':<40} {'Deadline':<8} {'City':<12} {'Zip':<5} {'Wt':>5}  {'Status':<10} {'Delivered At':<10}")
@@ -191,27 +186,20 @@ def print_package_status(packages: Dict[int, Package], store: HashTable, at_time
 
     for pid in sorted(packages.keys()):
         p = packages[pid]
-        status, time_str = package_status_at(p, at_time)
+        status, delivered_at = package_status_at(p, at_time)
 
         addr, city, z = public_address_city_zip(store, p, at_time)
 
-        print(f"{p.id:>3}  {addr:<40} {p.deadline:<8} {city:<12} {z:<5} {p.weight:>5.1f}  {status:<10} {time_str:<10}")
+        print(f"{p.id:>3}  {addr:<40} {p.deadline:<8} {city:<12} {z:<5} {p.weight:>5.1f}  {status:<10} {delivered_at:<10}")
     print()
 
 
 def print_completion_report(trucks: tuple[Truck, Truck, Truck], total_miles: float, packages: Dict[int, Package]) -> None:
-    """Print a rubric-friendly completion report (Requirement E).
-
-    This is designed for screenshots:
-    - Each truck's depart/return time and miles
-    - Total mileage for all trucks
-    - Confirmation that all packages were delivered
-    """
+    """Print a rubric-friendly completion report (Requirement E)."""
     undelivered = [pid for pid, p in packages.items() if p.delivered_at is None]
 
     print("\n=== Simulation completed successfully ===")
     for t in trucks:
-        # depart_time always exists; return_time should be set by router
         depart = t.depart_time.strftime('%H:%M')
         returned = t.return_time.strftime('%H:%M') if t.return_time else "N/A"
         print(
@@ -223,7 +211,6 @@ def print_completion_report(trucks: tuple[Truck, Truck, Truck], total_miles: flo
     print(f"All packages delivered: {'YES' if not undelivered else 'NO'}\n")
 
     if undelivered:
-        # Should not happen for the standard dataset, but it's helpful for debugging.
         print("Undelivered package IDs:", ", ".join(map(str, sorted(undelivered))))
         print()
 
@@ -234,7 +221,6 @@ def run_cli() -> None:
 
     packages_path = os.path.join(DATA_DIR, 'packages.csv')
 
-    # Some repositories include a cleaned CSV; prefer it if present.
     distances_clean = os.path.join(DATA_DIR, 'distances_clean.csv')
     distances_raw = os.path.join(DATA_DIR, 'distances.csv')
     distances_path = distances_clean if os.path.exists(distances_clean) else distances_raw
@@ -245,33 +231,23 @@ def run_cli() -> None:
         print(" - distances.csv (WGUPS distance table exported to CSV)\n")
         return
 
-    # 1) Load raw rows.
     pack_rows = load_packages_csv(packages_path)
     names, M = load_distance_matrix_csv(distances_path)
 
-    # 2) Build helper for address->location_id matching.
     location_lookup = build_location_lookup(names)
 
-    # 3) Build package storage (HashTable + Package objects).
     store, packages = build_packages_store(pack_rows, location_lookup)
 
-    # Preserve package #9's ORIGINAL public info from the hash table.
-    # We will keep these values in the hash table even after the simulation corrects the internal route.
     pkg9_original = ht_lookup_package(store, 9)
 
-    # 4) Run routes for the day.
     hub_id = 0
     trucks, total_miles = run_day(hub_id, M, packages, location_lookup=location_lookup)
 
-    # 5) Write final status/delivery times back to the hash table (Task A/B consistency).
     for pid, p in packages.items():
         rec = ht_lookup_package(store, pid)
         if rec is None:
             continue
 
-        # IMPORTANT RUBRIC RULE:
-        # Do NOT overwrite package #9's address/city/zip with the corrected values in the hash table,
-        # because WGUPS doesn't "know" the correct address until 10:20 for status checks.
         if pid == 9 and pkg9_original is not None:
             address = pkg9_original['address']
             city = pkg9_original['city']
@@ -293,10 +269,8 @@ def run_cli() -> None:
             p.delivered_at,
         )
 
-    # Requirement E: show a rubric-friendly completion/mileage report in the CLI.
     print_completion_report(trucks, total_miles, packages)
 
-    # ---- Interactive menu ----
     while True:
         print("Choose an option:")
         print(" 1) Lookup package by ID at a time (HH:MM)")
@@ -316,18 +290,14 @@ def run_cli() -> None:
                 print("Not found.\n")
                 continue
 
-            # For display, use time-aware “public” info (prevents leaking pkg #9 corrected address early).
             rec = ht_lookup_package(store, pid)
-            status, time_str = package_status_at(p, at_time)
+            status, delivered_at = package_status_at(p, at_time)
 
             addr, city, z = public_address_city_zip(store, p, at_time)
 
-            # If delayed, show why/when in a friendly way.
             extra = ""
-            if status == "DELAYED" and time_str:
-                extra = f"(arrives at hub at {time_str})"
-            elif status == "DELIVERED" and time_str:
-                extra = f"(delivered at {time_str})"
+            if status == "DELIVERED" and delivered_at:
+                extra = f"(delivered at {delivered_at})"
 
             print(
                 f"\nPackage {pid}: {addr}, {city} {z}, "
@@ -348,7 +318,6 @@ def run_cli() -> None:
             print()
 
         elif choice == '4':
-            # Re-print the rubric-friendly completion/mileage report for screenshots.
             print_completion_report(trucks, total_miles, packages)
 
         else:
